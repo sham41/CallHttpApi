@@ -47,7 +47,7 @@ type Api struct {
 }
 
 func main() {
-	fmt.Println("...Starting Api Caller v1.0.3 (c) 2025 dev@programmer.com.ua")
+	fmt.Println("...Starting Api Http Caller v1.0.3 (c)")
 	now := time.Now()
 
 	configPath := flag.String("conf", "config.yml", "path to config file")
