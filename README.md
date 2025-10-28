@@ -1,4 +1,4 @@
-# API Call
+# API Call thow HTTP
 Perform simple API calls and save the results into CSV files.
 
 The program accepts command-line parameters that specify the method name and resource path: `-url` and `-method`.
