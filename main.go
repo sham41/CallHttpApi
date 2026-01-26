@@ -26,15 +26,15 @@ const (
 )
 
 type ApiResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
+	//Success bool   `json:"success"`
+	//Message string `json:"message"`
 	//Errors  []string                 `json:"errors"`
 	Data []map[string]interface{} `json:"data"`
 	Meta PageData                 `json:"meta"`
 }
 
 type PageData struct {
-	Page  int `json:"page"`
+	Page  int `json:"current_page"`
 	Total int `json:"totalPage"`
 }
 
@@ -47,7 +47,7 @@ type Api struct {
 }
 
 func main() {
-	fmt.Println("...Starting Api Http Caller v1.0.3 (c)")
+	fmt.Println("...Starting Api Http Caller v1.0.4 (c)")
 	now := time.Now()
 
 	configPath := flag.String("conf", "config.yml", "path to config file")
@@ -184,15 +184,15 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		return
 	}
 
-	if !apiResponse.Success {
-		if apiResponse.Message != "" {
-			fmt.Println("#Error: ", apiResponse.Message)
-		}
-		//if len(apiResponse.Errors) > 0 {
-		//	fmt.Println("#Error: ", apiResponse.Errors)
-		//}
-		return
-	}
+	//if !apiResponse.Success {
+	//	if apiResponse.Message != "" {
+	//		fmt.Println("#Error: ", apiResponse.Message)
+	//	}
+	//if len(apiResponse.Errors) > 0 {
+	//	fmt.Println("#Error: ", apiResponse.Errors)
+	//}
+	//	return
+	//}
 
 	a.saveResponse(apiResponse, output)
 
@@ -215,10 +215,10 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 }
 
 func (a *Api) saveResponse(response ApiResponse, output string) {
-	if !response.Success {
-		fmt.Println("#Error: call was not successful")
-		return
-	}
+	//if !response.Success {
+	//	fmt.Println("#Error: call was not successful")
+	//	return
+	//}
 
 	// Create CSV file
 	csvFile, err := os.Create(fmt.Sprintf("%s%s", a.outputPath, output))
