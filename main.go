@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -20,10 +21,18 @@ import (
 )
 
 const (
-	outputFile = "output.csv"
-	inputFile  = "input.csv"
-	objectFile = "object.csv"
+	outputFile    = "output.csv"
+	inputFile     = "input.csv"
+	objectFile    = "object.csv"
+	outputFileXml = "output.xml"
+	//inputFileXml  = "input.xml"
 )
+
+type Node struct {
+	XMLName xml.Name
+	Nodes   []Node `xml:",any,omitempty"`
+	Value   string `xml:",chardata"`
+}
 
 type ApiResponse struct {
 	//Success bool   `json:"success"`
@@ -40,14 +49,16 @@ type PageData struct {
 
 type Api struct {
 	url        string
+	apiURL     string
 	inputPath  string
 	outputPath string
 	token      string
 	debug      bool
+	xml        bool
 }
 
 func main() {
-	fmt.Println("...Starting Api Http Caller v1.0.4 (c)")
+	fmt.Println("...Starting Api Http Caller v1.1.0 (c)")
 	now := time.Now()
 
 	configPath := flag.String("conf", "config.yml", "path to config file")
@@ -56,6 +67,7 @@ func main() {
 	workPath := flag.String("path", "", "working directory")
 	boundary := flag.String("boundary", "", "File name to be send using boundary")
 	debug := flag.Bool("debug", false, "enable debug mode")
+	apiXml := flag.Bool("xml", false, "enable xml mode")
 	flag.Parse()
 
 	if *apiURL == "" {
@@ -77,9 +89,11 @@ func main() {
 
 	api := Api{
 		url:        fmt.Sprintf("%s%s", baseUrl, *apiURL),
+		apiURL:     *apiURL,
 		inputPath:  conf.InputPath,
 		outputPath: conf.OutputPath,
 		token:      conf.BearerToken,
+		xml:        *apiXml,
 	}
 	if workPath != nil && *workPath != "" {
 		api.inputPath = *workPath
@@ -92,6 +106,7 @@ func main() {
 		fmt.Println("API Method:", *apiMethod)
 		fmt.Println("Working directory:", workPath)
 		fmt.Println("Boundary:", *boundary)
+		fmt.Println("XML mode:", *apiXml)
 		api.debug = true
 	}
 
@@ -130,8 +145,113 @@ func main() {
 		}
 	}
 
-	api.doHttpMethod(method, jsonBytes, outputFile)
+	outputFileName := outputFile
+	if api.xml {
+		outputFileName = outputFileXml
+	}
 
+	api.doHttpMethod(method, jsonBytes, outputFileName)
+
+}
+
+func safeName(s string) string {
+
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+
+	if s == "" {
+		return "Field"
+	}
+	if s[0] >= '0' && s[0] <= '9' {
+		s = "F_" + s
+	}
+	return s
+}
+
+// toXML - converts a Node to an indented string
+func toXML(node Node, indent string) string {
+
+	if len(node.Nodes) == 0 {
+		return fmt.Sprintf("%s<%s>%s</%s>\n", indent, node.XMLName.Local, node.Value, node.XMLName.Local)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s<%s>\n", indent, node.XMLName.Local))
+	for _, child := range node.Nodes {
+		sb.WriteString(toXML(child, indent+"  "))
+	}
+	sb.WriteString(fmt.Sprintf("%s</%s>\n", indent, node.XMLName.Local))
+	return sb.String()
+}
+
+// Convert the array name to a singular number
+func singularName(name string) string {
+	if strings.HasSuffix(name, "s") && len(name) > 1 {
+		return strings.TrimSuffix(name, "s")
+	}
+	return "item"
+}
+
+func extractServiceTag(urlParam string) string {
+
+	// urlParam = "/orders?page=2&date="
+	// remove the leading "/"
+	urlPath := strings.TrimPrefix(urlParam, "/")
+
+	// We look for the "?" symbol and cut off everything after it.
+	if idx := strings.Index(urlPath, "?"); idx != -1 {
+		urlPath = urlPath[:idx]
+	}
+
+	// convert to a safe XML name
+	return safeName(urlPath)
+}
+func convertJSONtoXML(name string, v interface{}) Node {
+	node := Node{
+		XMLName: xml.Name{Local: safeName(name)},
+	}
+
+	var childrenValues []Node
+	var childrenArrays []Node
+
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for k, v := range val {
+			child := convertJSONtoXML(k, v)
+
+			// Decide where to put it: arrays at the bottom, simple values ​​at the top
+			if len(child.Nodes) > 0 && child.XMLName.Local != "" {
+				childrenArrays = append(childrenArrays, child)
+			} else {
+				childrenValues = append(childrenValues, child)
+			}
+		}
+
+	case []interface{}:
+		itemName := singularName(name)
+		for _, v := range val {
+			childrenArrays = append(childrenArrays, convertJSONtoXML(itemName, v))
+		}
+
+	case nil:
+		node.Value = ""
+
+	case bool:
+		if val {
+			node.Value = "true"
+		} else {
+			node.Value = "false"
+		}
+
+	default:
+		node.Value = fmt.Sprint(val)
+	}
+
+	// объединяем: значения вверх, массивы вниз
+	node.Nodes = append(childrenValues, childrenArrays...)
+
+	return node
 }
 
 func (a *Api) doHttpMethod(method string, data []byte, output string) {
@@ -194,8 +314,14 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	//	return
 	//}
 
-	a.saveResponse(apiResponse, output)
+	// save in CSV or XML
+	if a.xml {
+		a.saveResponseXml(apiResponse, output)
+	} else {
+		a.saveResponse(apiResponse, output)
+	}
 
+	// handle pagination
 	if apiResponse.Meta.Total > apiResponse.Meta.Page {
 		nextPage := apiResponse.Meta.Page + 1
 		fmt.Printf("fetching page %d of %d...\n", nextPage, apiResponse.Meta.Total)
@@ -210,8 +336,76 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		parsedParams.RawQuery = params.Encode()
 		a.url = parsedParams.String()
 
-		a.doHttpMethod("GET", nil, fmt.Sprintf("output_%d.csv", nextPage))
+		// determine output file extension
+		ext := "csv"
+		if a.xml {
+			ext = "xml"
+		}
+
+		// recursive call for next page
+		a.doHttpMethod("GET", nil, fmt.Sprintf("output_%d.%s", nextPage, ext))
 	}
+}
+
+func (a *Api) saveResponseXml(response ApiResponse, output string) {
+
+	if len(response.Data) == 0 {
+		fmt.Println("#Warn: no data to write")
+		return
+	}
+
+	// 📁 файл
+	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
+	file, err := os.Create(fileName)
+	if err != nil {
+		fmt.Println("#Error: creating file:", err)
+		return
+	}
+	defer file.Close()
+
+	// 📦 []map[string]interface{} → []interface{}
+	items := make([]interface{}, 0, len(response.Data))
+	for _, row := range response.Data {
+		items = append(items, row)
+	}
+
+	// Имя сервиса пришло как параметр
+	serviceName := extractServiceTag(a.apiURL)
+
+	// убираем "/" и делаем безопасное имя
+	rootTag := safeName(strings.TrimPrefix(serviceName, "/"))
+
+	// 🌳 JSON-like data → XML tree
+	root := convertJSONtoXML(rootTag, items)
+
+	// 🧾 XML (UTF-8)
+	xmlBody, err := xml.MarshalIndent(root, "", "  ")
+	if err != nil {
+		fmt.Println("#Error: marshal xml:", err)
+		return
+	}
+
+	// 🧷 XML header
+	xmlFull := append(
+		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
+		xmlBody...,
+	)
+
+	// 🔁 UTF-8 → Windows-1251
+	encoder := charmap.Windows1251.NewEncoder()
+	cp1251Data, err := encoder.Bytes(xmlFull)
+	if err != nil {
+		fmt.Println("#Error: encoding to windows-1251:", err)
+		return
+	}
+
+	// 💾 запись
+	if _, err := file.Write(cp1251Data); err != nil {
+		fmt.Println("#Error: writing file:", err)
+		return
+	}
+
+	fmt.Printf("received %d records (xml): %s\n", len(response.Data), output)
 }
 
 func (a *Api) saveResponse(response ApiResponse, output string) {
@@ -402,7 +596,7 @@ func (a *Api) removeFiles() {
 
 	for _, file := range files {
 		if !file.IsDir() {
-			if strings.HasPrefix(file.Name(), "output") && strings.HasSuffix(file.Name(), ".csv") {
+			if strings.HasPrefix(file.Name(), "output") && strings.HasSuffix(file.Name(), ".csv") || strings.HasPrefix(file.Name(), "output") && strings.HasSuffix(file.Name(), ".xml") {
 				err := os.Remove(fmt.Sprintf("%s%s", a.outputPath, file.Name()))
 				if err != nil {
 					fmt.Printf("deleting file %s: %v\n", file.Name(), err)
