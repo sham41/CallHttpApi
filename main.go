@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/net/html/charset"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 )
@@ -25,7 +26,7 @@ const (
 	inputFile     = "input.csv"
 	objectFile    = "object.csv"
 	outputFileXml = "output.xml"
-	//inputFileXml  = "input.xml"
+	inputFileXml  = "input.xml"
 )
 
 type Node struct {
@@ -47,6 +48,11 @@ type PageData struct {
 	Total int `json:"totalPage"`
 }
 
+type RequestXML struct {
+	XMLName xml.Name `xml:"request"`
+	Meta    Node     `xml:"meta"`
+	Data    Node     `xml:"data"`
+}
 type Api struct {
 	url        string
 	apiURL     string
@@ -58,9 +64,12 @@ type Api struct {
 }
 
 func main() {
-	fmt.Println("...Starting Api Http Caller v1.1.0 (c)")
-	now := time.Now()
 
+	// program start
+	fmt.Println("...Starting Api Http Caller v1.2.0 (c)")
+	StartTime := time.Now()
+
+	// command line flags
 	configPath := flag.String("conf", "config.yml", "path to config file")
 	apiURL := flag.String("url", "", "API resource URL to fetch data from")
 	apiMethod := flag.String("method", "GET", "HTTP method (GET, POST, etc.)")
@@ -70,23 +79,27 @@ func main() {
 	apiXml := flag.Bool("xml", false, "enable xml mode")
 	flag.Parse()
 
+	// validate required parameters
 	if *apiURL == "" {
 		fmt.Println("Please provide an API URL.")
 		return
 	}
 
+	// read configuration file
 	conf, err := GetConfig(*configPath)
 	if err != nil {
 		fmt.Println("reading config file:", err)
 		return
 	}
 
+	// validate base URL
 	baseUrl := conf.BaseUrl
 	if baseUrl == "" {
 		fmt.Println("Please provide a base URL in the configuration file.")
 		return
 	}
 
+	// initialize Api struct with configuration and command line parameters
 	api := Api{
 		url:        fmt.Sprintf("%s%s", baseUrl, *apiURL),
 		apiURL:     *apiURL,
@@ -95,67 +108,112 @@ func main() {
 		token:      conf.BearerToken,
 		xml:        *apiXml,
 	}
+
+	// override paths if provided via command line
 	if workPath != nil && *workPath != "" {
 		api.inputPath = *workPath
 		api.outputPath = *workPath
 	}
+
+	// debug output
 	if *debug {
 		fmt.Println("Debug mode is ON")
 		fmt.Println("Config file:", *configPath)
 		fmt.Println("API URL:", *apiURL)
 		fmt.Println("API Method:", *apiMethod)
-		fmt.Println("Working directory:", workPath)
+		fmt.Println("Working directory:", *workPath)
 		fmt.Println("Boundary:", *boundary)
 		fmt.Println("XML mode:", *apiXml)
 		api.debug = true
 	}
 
+	// setup logging to file
 	logFile := fmt.Sprintf("%serrors.log", api.outputPath)
-	_ = os.Remove(logFile)
+
+	// remove previous log file if exists (optional, can be commented out if you want to keep logs from previous runs)
+	//_ = os.Remove(logFile)
+
+	// open log file for appending, create if not exists
 	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		fmt.Printf("opening or creating log file: %v\n", err)
 		return
 	}
+
+	// ensure log file is closed at the end
 	defer func(file *os.File) {
-		fmt.Printf("Finished in %s\n", time.Since(now))
+
+		// log finish time
+		fmt.Printf("Finished in %s\n", time.Since(StartTime))
+		fmt.Printf("Finished ===================================== <<< %s\n\n", logTime(time.Now()))
+
+		// close log file
 		err = file.Close()
 		if err != nil {
 			fmt.Println("closing log file:", err)
 			return
 		}
 	}(file)
+
+	// redirect standard output to the log file
 	os.Stdout = file
 
+	// log start time
+	fmt.Println("Start ===================================== >>>", logTime(StartTime))
+
+	// remove previous output files
 	api.removeFiles()
 
+	// determine HTTP method
 	method := strings.ToUpper(*apiMethod)
 
+	// handle multipart POST if boundary is provided only for POST method and csv file (xml multipart is not implemented in this version)
 	if boundary != nil && *boundary != "" && method == "POST" {
 		api.doMultipartPost(*boundary)
 		return
 	}
 
+	// for GET no body
 	var jsonBytes []byte
+
+	// for other methods prepare body
 	if method != "GET" {
-		jsonBytes, err = prepareBody(api.inputPath)
+
+		// read input file(s) and prepare JSON body
+		if api.xml {
+			jsonBytes, err = prepareBodyXML(api.inputPath)
+		} else {
+			jsonBytes, err = prepareBody(api.inputPath)
+		}
+
+		// handle error
 		if err != nil {
 			fmt.Println("#Error: preparing body:", err)
 			return
 		}
 	}
 
+	// determine output file name
 	outputFileName := outputFile
 	if api.xml {
 		outputFileName = outputFileXml
 	}
 
+	// make the HTTP call
 	api.doHttpMethod(method, jsonBytes, outputFileName)
 
 }
 
+// logTime - formats time for logging
+func logTime(t time.Time) string {
+
+	return t.Format("2006-01-02 15:04:05.000")
+}
+
+// safeName - makes a string safe for XML tag names
 func safeName(s string) string {
 
+	// replace spaces and dashes with underscores, trim leading/trailing whitespace
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, " ", "_")
 	s = strings.ReplaceAll(s, "-", "_")
@@ -170,7 +228,7 @@ func safeName(s string) string {
 }
 
 // toXML - converts a Node to an indented string
-func toXML(node Node, indent string) string {
+func NodetoXML(node Node, indent string) string {
 
 	if len(node.Nodes) == 0 {
 		return fmt.Sprintf("%s<%s>%s</%s>\n", indent, node.XMLName.Local, node.Value, node.XMLName.Local)
@@ -179,7 +237,7 @@ func toXML(node Node, indent string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s<%s>\n", indent, node.XMLName.Local))
 	for _, child := range node.Nodes {
-		sb.WriteString(toXML(child, indent+"  "))
+		sb.WriteString(NodetoXML(child, indent+"  "))
 	}
 	sb.WriteString(fmt.Sprintf("%s</%s>\n", indent, node.XMLName.Local))
 	return sb.String()
@@ -193,6 +251,7 @@ func singularName(name string) string {
 	return "item"
 }
 
+// extractServiceTag - extracts service tag from URL parameter
 func extractServiceTag(urlParam string) string {
 
 	// urlParam = "/orders?page=2&date="
@@ -207,14 +266,18 @@ func extractServiceTag(urlParam string) string {
 	// convert to a safe XML name
 	return safeName(urlPath)
 }
+
+// convertJSONtoXML - recursively converts JSON-like data to an XML tree of Nodes
 func convertJSONtoXML(name string, v interface{}) Node {
 	node := Node{
 		XMLName: xml.Name{Local: safeName(name)},
 	}
 
+	// we will separate simple values and arrays/objects to keep simple values at the top of the XML and arrays/objects at the bottom for better readability
 	var childrenValues []Node
 	var childrenArrays []Node
 
+	// determine the type of the value and process accordingly
 	switch val := v.(type) {
 	case map[string]interface{}:
 		for k, v := range val {
@@ -248,25 +311,32 @@ func convertJSONtoXML(name string, v interface{}) Node {
 		node.Value = fmt.Sprint(val)
 	}
 
-	// объединяем: значения вверх, массивы вниз
+	// arrays at the bottom, simple values ​​at the top
 	node.Nodes = append(childrenValues, childrenArrays...)
 
 	return node
 }
 
+// doHttpMethod - makes an HTTP request with the given method, body, and handles the response
 func (a *Api) doHttpMethod(method string, data []byte, output string) {
+
+	// log the request being made
 	fmt.Printf("%s: %s\n", method, a.url)
 
+	//	create HTTP request
 	req, err := http.NewRequest(method, a.url, bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Println("#Error: creating request:", err)
 		return
 	}
+
+	// set headers
 	req.Header.Set("Content-Type", "application/json")
 	if a.token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.token))
 	}
 
+	// make the HTTP request
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -274,6 +344,7 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		return
 	}
 
+	// ensure response body is closed at the end
 	defer func(Body io.ReadCloser) {
 		err = Body.Close()
 		if err != nil {
@@ -282,18 +353,21 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		}
 	}(resp.Body)
 
+	// check for non-successful status codes
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("#Error: reading response body:", err)
 		return
 	}
 
+	// log the response body if debug mode is enabled
 	if a.debug {
 		fmt.Println("Response ===================================== >>>")
 		fmt.Printf("%s\n", string(body))
 		fmt.Println("Response ===================================== <<<")
 	}
 
+	//
 	var apiResponse ApiResponse
 	//err = json.Unmarshal(body, &apiResponse)
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -321,8 +395,10 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		a.saveResponse(apiResponse, output)
 	}
 
-	// handle pagination
+	// pagination: if there are more pages, recursively call for the next page
 	if apiResponse.Meta.Total > apiResponse.Meta.Page {
+
+		// calculate the next page number and log it
 		nextPage := apiResponse.Meta.Page + 1
 		fmt.Printf("fetching page %d of %d...\n", nextPage, apiResponse.Meta.Total)
 
@@ -331,6 +407,8 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 			fmt.Println("#Error: parsing URL:", err)
 			return
 		}
+
+		// update the "page" query parameter
 		params := parsedParams.Query()
 		params.Set("page", fmt.Sprintf("%d", nextPage))
 		parsedParams.RawQuery = params.Encode()
@@ -347,6 +425,7 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	}
 }
 
+// saveResponseXml - saves the API response data as an XML file
 func (a *Api) saveResponseXml(response ApiResponse, output string) {
 
 	if len(response.Data) == 0 {
@@ -354,7 +433,7 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 		return
 	}
 
-	// 📁 файл
+	// Create XML file
 	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
 	file, err := os.Create(fileName)
 	if err != nil {
@@ -363,35 +442,35 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 	}
 	defer file.Close()
 
-	// 📦 []map[string]interface{} → []interface{}
+	// []map[string]interface{} → []interface{}
 	items := make([]interface{}, 0, len(response.Data))
 	for _, row := range response.Data {
 		items = append(items, row)
 	}
 
-	// Имя сервиса пришло как параметр
+	// extract service name from URL
 	serviceName := extractServiceTag(a.apiURL)
 
-	// убираем "/" и делаем безопасное имя
+	// root tag
 	rootTag := safeName(strings.TrimPrefix(serviceName, "/"))
 
-	// 🌳 JSON-like data → XML tree
+	// JSON-like data → XML tree
 	root := convertJSONtoXML(rootTag, items)
 
-	// 🧾 XML (UTF-8)
+	// XML (UTF-8)
 	xmlBody, err := xml.MarshalIndent(root, "", "  ")
 	if err != nil {
 		fmt.Println("#Error: marshal xml:", err)
 		return
 	}
 
-	// 🧷 XML header
+	// XML header
 	xmlFull := append(
 		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
 		xmlBody...,
 	)
 
-	// 🔁 UTF-8 → Windows-1251
+	// UTF-8 → Windows-1251
 	encoder := charmap.Windows1251.NewEncoder()
 	cp1251Data, err := encoder.Bytes(xmlFull)
 	if err != nil {
@@ -399,16 +478,19 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 		return
 	}
 
-	// 💾 запись
+	// write to file
 	if _, err := file.Write(cp1251Data); err != nil {
 		fmt.Println("#Error: writing file:", err)
 		return
 	}
 
+	// success message
 	fmt.Printf("received %d records (xml): %s\n", len(response.Data), output)
 }
 
+// saveResponse - saves the API response data as a CSV file
 func (a *Api) saveResponse(response ApiResponse, output string) {
+
 	//if !response.Success {
 	//	fmt.Println("#Error: call was not successful")
 	//	return
@@ -472,6 +554,118 @@ func (a *Api) saveResponse(response ApiResponse, output string) {
 	fmt.Printf("received %d records: %s\n", len(response.Data), output)
 }
 
+// getChildXML - retrieves a child Node by name
+func getChildXML(node Node, name string) *Node {
+
+	for i, child := range node.Nodes {
+		if child.XMLName.Local == name {
+			return &node.Nodes[i]
+		}
+	}
+	return nil
+}
+
+// XMLnodeToInterface - converts an XML Node to a generic interface{}
+func XMLnodeToInterface(n Node) interface{} {
+
+	// ✅ Value
+	if len(n.Nodes) == 0 {
+		return strings.TrimSpace(n.Value)
+	}
+
+	// if this as a array or object
+	sameName := true
+	first := n.Nodes[0].XMLName.Local
+
+	for _, ch := range n.Nodes {
+		if ch.XMLName.Local != first {
+			sameName = false
+			break
+		}
+	}
+
+	// ✅ Array
+	if sameName {
+		arr := make([]interface{}, 0, len(n.Nodes))
+		for _, ch := range n.Nodes {
+			arr = append(arr, XMLnodeToInterface(ch))
+		}
+		return arr
+	}
+
+	// ✅ Object
+	obj := make(map[string]interface{})
+	for _, ch := range n.Nodes {
+		obj[ch.XMLName.Local] = XMLnodeToInterface(ch)
+	}
+
+	return obj
+}
+
+// dataNodeToPayload - converts the data Node to a payload map
+func dataNodeToPayload(data Node) map[string]interface{} {
+
+	result := make(map[string]interface{})
+
+	for _, child := range data.Nodes {
+		result[child.XMLName.Local] = XMLnodeToInterface(child)
+	}
+
+	return result
+}
+
+// getJsonBytesFromXMLData - converts XML data Node to JSON bytes
+func getJsonBytesFromXMLData(dataNode Node) ([]byte, error) {
+
+	// converting xml to universal structure
+	payload := dataNodeToPayload(dataNode)
+
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling JSON from XML: %w", err)
+	}
+
+	fmt.Println("Body ===================================== >>>")
+	fmt.Printf("%s\n", string(jsonBytes))
+	fmt.Println("Body ===================================== <<<")
+
+	return jsonBytes, nil
+}
+
+// prepareBodyXML - prepares JSON body from XML input file
+func prepareBodyXML(path string) ([]byte, error) {
+
+	// single XML file
+	reqXML, err := readFileContentXML(path, inputFileXml)
+
+	if err != nil {
+		return nil, fmt.Errorf("reading file %s: %w", inputFileXml, err)
+	}
+
+	// service - url
+	var pservice, purl string
+	if n := getChildXML(reqXML.Meta, "service"); n != nil {
+		pservice = n.Value
+	}
+	if n := getChildXML(reqXML.Meta, "url"); n != nil {
+		purl = n.Value
+	}
+
+	fmt.Println("Service -", pservice, "URL-", purl)
+
+	// getting data Node
+	dataNode := reqXML.Data
+
+	// converting data Node to JSON bytes
+	jsonBytes, err := getJsonBytesFromXMLData(dataNode)
+	if err != nil {
+		return nil, fmt.Errorf("reading file content: %s: %w", inputFileXml, err)
+	}
+
+	return jsonBytes, nil
+}
+
+// prepareBody - prepares JSON body from input file(s)
 func prepareBody(path string) ([]byte, error) {
 
 	singleFile, err := readFileContent(path, objectFile)
@@ -513,6 +707,35 @@ func prepareBody(path string) ([]byte, error) {
 	return getJsonBytes(result)
 }
 
+// readFileContentXML - reads XML file and parses it into RequestXML struct
+func readFileContentXML(path, fileName string) (*RequestXML, error) {
+
+	filePath := fmt.Sprintf("%s%s", path, fileName)
+
+	dataBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("opening file %s: %w", fileName, err)
+	}
+
+	fmt.Println("Reading XML file:", fileName)
+
+	var req RequestXML
+
+	decoder := xml.NewDecoder(bytes.NewReader(dataBytes))
+	decoder.CharsetReader = charset.NewReaderLabel
+
+	if err := decoder.Decode(&req); err != nil {
+		return nil, fmt.Errorf("parsing XML: %w", err)
+	}
+	// alternative simpler way (to be used if no special charset windows-1251 handling is needed)
+	//if err := xml.Unmarshal(dataBytes, &req); err != nil {
+	//	return nil, fmt.Errorf("parsing XML: %w", err)
+	//}
+
+	return &req, nil
+}
+
+// readFileContent - reads CSV file and converts it to a slice of maps
 func readFileContent(path, fileName string) ([]map[string]interface{}, error) {
 	file, err := os.Open(fmt.Sprintf("%s%s", path, fileName))
 	if err != nil {
@@ -551,6 +774,7 @@ func readFileContent(path, fileName string) ([]map[string]interface{}, error) {
 	return jsonPayload, nil
 }
 
+// getJsonBytes - converts a generic interface to JSON bytes
 func getJsonBytes(v any) ([]byte, error) {
 	jsonBytes, err := json.Marshal(v)
 	if err != nil {
@@ -562,6 +786,7 @@ func getJsonBytes(v any) ([]byte, error) {
 	return jsonBytes, nil
 }
 
+// ConvertToUTF8 - converts a Windows-1251 encoded string to UTF-8
 func ConvertToUTF8(win1251 string) (string, error) {
 	decoder := charmap.Windows1251.NewDecoder()
 	utf8Content, err := decoder.String(win1251)
@@ -571,6 +796,7 @@ func ConvertToUTF8(win1251 string) (string, error) {
 	return utf8Content, nil
 }
 
+// ConvertToWindows1251 - converts a UTF-8 encoded string to Windows-1251, replacing unsupported characters with space and collapsing multiple spaces into one
 func ConvertToWindows1251(utf8Str string) (string, error) {
 	enc := encoding.ReplaceUnsupported(charmap.Windows1251.NewEncoder())
 	win1251Content, err := enc.String(utf8Str)
@@ -587,6 +813,7 @@ func ConvertToWindows1251(utf8Str string) (string, error) {
 	return win1251Content, nil
 }
 
+// removeFiles - removes previously generated output files to avoid confusion with new results
 func (a *Api) removeFiles() {
 	files, err := os.ReadDir(a.outputPath)
 	if err != nil {
@@ -606,6 +833,7 @@ func (a *Api) removeFiles() {
 	}
 }
 
+// doMultipartPost - performs a multipart/form-data POST request with a file
 func (a *Api) doMultipartPost(boundary string) {
 	fmt.Printf("POST: %s\n", a.url)
 
@@ -688,6 +916,7 @@ func (a *Api) doMultipartPost(boundary string) {
 // DecodeJSON parses a JSON-encoded byte slice into a generic interface and validates that the top-level object is a map.
 // It converts JSON numbers to int64 or float64 where applicable for numeric accuracy. Returns the parsed object or an error.
 func DecodeJSON(body []byte) (map[string]interface{}, error) {
+
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
