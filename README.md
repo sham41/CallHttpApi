@@ -43,6 +43,7 @@ The result can be saved as:
     XML (optional)
 Output encoding may be converted to Windows-1251 if required.
 
+```
 Pagination Support
 You can call multiple pages manually:
 -url=/orders?page=1
@@ -54,25 +55,25 @@ python
 orders_1.csv/xml
 orders_2.csv/xml
 orders_3.csv/xml
-
-
+```
 To make a GET request on url https://my-test.site/api/v1/resourse, run the application with the following command:
 To use the mode of operation via the XML exchange format, use the parameter `-xml`
 
 Conversion Rules XML/JSON:
-    Objects → XML nodes
-    Arrays → repeated child elements
-    Values → text nodes
-    Root tag name is derived from the service URL
 
-`Example:
+Objects → XML nodes
+Arrays → repeated child elements
+Values → text nodes
+Root tag name is derived from the service URL
+
+```Example:
 URL:
 /orders
 XML root:
 <orders>
   ...
 </orders>
-`
+```
 
 ```bash
 call.exe -url=/resource -method=GET 
@@ -132,8 +133,7 @@ The <data> section is transformed into a JSON object.
 A POST request is sent to the configured API URL.
 The JSON body is passed as the request payload.
 
-XML Contract (Minimal Structure)
-python
+```XML Contract (Minimal Structure)
 <request>
   <meta>
     <service>brands</service>
@@ -144,11 +144,12 @@ python
     <!-- Any structure required by the target API -->
   </data>
 </request>
+```
 
 Example of a POST request, body is taken from `input.xml` file:
 Example: Create Brands (POST)
 XML Input:
-
+```
 <request>
   <meta>
     <service>brands</service>
@@ -172,9 +173,9 @@ XML Input:
     </manufacturers>
   </data>
 </request>
-
+```
 Generated JSON Body
-
+```
 {
   "manufacturers": [
     {
@@ -192,7 +193,7 @@ Generated JSON Body
     }
   ]
 }
-
+```
 
 ```bash
 call.exe -url=/resource -method=POST -xml 
