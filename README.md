@@ -138,7 +138,7 @@ The JSON body is passed as the request payload.
   <meta>
     <service>brands</service>
     <url>/import</url>
-    <url>/import</url>
+    <method>POST</method>
   </meta>
   <data>
     <!-- Any structure required by the target API -->
@@ -154,6 +154,7 @@ XML Input:
   <meta>
     <service>brands</service>
     <url>/import</url>
+    <method>POST</method>
   </meta>
   <data>
     <manufacturers>
