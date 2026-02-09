@@ -43,18 +43,21 @@ The result can be saved as:
     XML (optional)
 Output encoding may be converted to Windows-1251 if required.
 
-```
 Pagination Support
 You can call multiple pages manually:
+``` url
 -url=/orders?page=1
 -url=/orders?page=2
 -url=/orders?page=3
-
+```
 The application can save each page as a separate file:
-python
-orders_1.csv/xml
-orders_2.csv/xml
-orders_3.csv/xml
+``` file
+orders_1.csv
+orders_1.xml 
+orders_2.csv
+orders_2.xml
+orders_3.csv
+orders_3.xml
 ```
 To make a GET request on url https://my-test.site/api/v1/resourse, run the application with the following command:
 To use the mode of operation via the XML exchange format, use the parameter `-xml`
@@ -62,11 +65,15 @@ To use the mode of operation via the XML exchange format, use the parameter `-xm
 Conversion Rules XML/JSON:
 
 Objects → XML nodes
+
 Arrays → repeated child elements
+
 Values → text nodes
+
 Root tag name is derived from the service URL
 
-```Example:
+Example:
+```xml
 URL:
 /orders
 XML root:
@@ -91,6 +98,7 @@ value1,value2,value3
 value4,value5,value6
 ```
 This example will create the following JSON payload:
+
 ```json
 [
     {
@@ -133,7 +141,8 @@ The <data> section is transformed into a JSON object.
 A POST request is sent to the configured API URL.
 The JSON body is passed as the request payload.
 
-```XML Contract (Minimal Structure)
+XML Contract (Minimal Structure)
+```xml
 <request>
   <meta>
     <service>brands</service>
@@ -148,8 +157,10 @@ The JSON body is passed as the request payload.
 
 Example of a POST request, body is taken from `input.xml` file:
 Example: Create Brands (POST)
+
 XML Input:
-```
+```xml
+
 <request>
   <meta>
     <service>brands</service>
@@ -176,7 +187,7 @@ XML Input:
 </request>
 ```
 Generated JSON Body
-```
+```JSON
 {
   "manufacturers": [
     {
