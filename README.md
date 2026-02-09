@@ -111,7 +111,7 @@ call.exe -url=/resource -method=POST
 ```
 To send a single JSON object, create an `object.csv` file with two rows, keys and values.
 
-### POST file as boundary (CSV)
+### POST file as boundary
 
 To send a file as a boundary, use parameter `-boundary` with the file name.
 ```bash
