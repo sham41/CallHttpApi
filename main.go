@@ -36,16 +36,16 @@ type Node struct {
 }
 
 type ApiResponse struct {
-	//Success bool   `json:"success"`
-	//Message string `json:"message"`
-	//Errors  []string                 `json:"errors"`
+	//Success bool   	`json:"success"`
+	//Message string 	`json:"message"`
+	//Errors  []string	`json:"errors"`
 	Data []map[string]interface{} `json:"data"`
 	Meta PageData                 `json:"meta"`
 }
 
 type PageData struct {
 	Page  int `json:"current_page"`
-	Total int `json:"totalPage"`
+	Total int `json:"last_page"`
 }
 
 type RequestXML struct {
@@ -394,6 +394,9 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	} else {
 		a.saveResponse(apiResponse, output)
 	}
+
+	//fmt.Println("#apiResponse.Meta.Total:", apiResponse.Meta.Total)
+	//fmt.Println("#apiResponse.Meta.Page:", apiResponse.Meta.Page)
 
 	// pagination: if there are more pages, recursively call for the next page
 	if apiResponse.Meta.Total > apiResponse.Meta.Page {
