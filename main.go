@@ -67,7 +67,7 @@ type Api struct {
 func main() {
 
 	// program start
-	fmt.Println("...Starting Api Http Caller v1.2.0 (c)")
+	fmt.Println("...Starting Api Http Caller v1.2.1 (c)")
 	StartTime := time.Now()
 
 	// command line flags
