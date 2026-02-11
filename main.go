@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -269,21 +270,38 @@ func extractServiceTag(urlParam string) string {
 
 // convertJSONtoXML - recursively converts JSON-like data to an XML tree of Nodes
 func convertJSONtoXML(name string, v interface{}) Node {
+
+	// create a new Node with the given name, ensuring it's safe for XML
 	node := Node{
 		XMLName: xml.Name{Local: safeName(name)},
 	}
 
-	// we will separate simple values and arrays/objects to keep simple values at the top of the XML and arrays/objects at the bottom for better readability
+	// simple fields at the top, arrays/objects at the bottom
 	var childrenValues []Node
 	var childrenArrays []Node
 
 	// determine the type of the value and process accordingly
 	switch val := v.(type) {
-	case map[string]interface{}:
-		for k, v := range val {
-			child := convertJSONtoXML(k, v)
 
-			// Decide where to put it: arrays at the bottom, simple values ​​at the top
+	// if it's a map, we treat it as an object and recursively convert its fields to child Nodes
+	case map[string]interface{}:
+
+		// 🔹 Collect and sort keys to make XML deterministic
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+
+		// 🔹 Sort keys alphabetically for consistent output
+		sort.Strings(keys)
+
+		// 🔹 Process in stable order
+		for _, k := range keys {
+
+			// recursively convert each field to XML
+			child := convertJSONtoXML(k, val[k])
+
+			// objects/arrays go to bottom, simple values at the top
 			if len(child.Nodes) > 0 && child.XMLName.Local != "" {
 				childrenArrays = append(childrenArrays, child)
 			} else {
@@ -291,9 +309,14 @@ func convertJSONtoXML(name string, v interface{}) Node {
 			}
 		}
 
+	// if it's an array, we treat it as a collection and recursively convert each item to a child Node with the singular form of the name
 	case []interface{}:
+
+		// 🔹 For arrays, we use the singular form of the name for each item
 		itemName := singularName(name)
 		for _, v := range val {
+
+			// recursively convert each item to XML and add to children arrays
 			childrenArrays = append(childrenArrays, convertJSONtoXML(itemName, v))
 		}
 
@@ -311,7 +334,7 @@ func convertJSONtoXML(name string, v interface{}) Node {
 		node.Value = fmt.Sprint(val)
 	}
 
-	// arrays at the bottom, simple values ​​at the top
+	// 🔹 Final layout: values first, collections after
 	node.Nodes = append(childrenValues, childrenArrays...)
 
 	return node
