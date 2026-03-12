@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -469,16 +470,27 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		params := parsedParams.Query()
 		params.Set("page", fmt.Sprintf("%d", nextPage))
 		parsedParams.RawQuery = params.Encode()
-		a.url = parsedParams.String()
 
 		// determine output file extension
-		ext := "csv"
+		extFileOutput := "csv"
 		if a.xml {
-			ext = "xml"
+			extFileOutput = "xml"
 		}
 
-		// recursive call for next page
-		a.doHttpMethod("GET", nil, fmt.Sprintf("output_%d.%s", nextPage, ext))
+		// get the next page URL and log it
+		nextURL := parsedParams.String()
+
+		// temporarily use next page URL
+		oldURL := a.url
+
+		// update the API URL to the next page URL for the recursive call
+		a.url = nextURL
+
+		// recursively call the same method to fetch the next page, using a different output file name to avoid overwriting the previous page's results
+		a.doHttpMethod("GET", nil, fmt.Sprintf("output_%d.%s", nextPage, extFileOutput))
+
+		// restore original URL
+		a.url = oldURL
 	}
 }
 
@@ -932,12 +944,21 @@ func (a *Api) removeFiles() {
 		return
 	}
 
+	// we look for files that start with "output" and end with ".csv", ".xml", or ".tmp" and attempt to remove them
 	for _, file := range files {
+
 		if !file.IsDir() {
-			if strings.HasPrefix(file.Name(), "output") && strings.HasSuffix(file.Name(), ".csv") || strings.HasPrefix(file.Name(), "output") && strings.HasSuffix(file.Name(), ".xml") {
-				err := os.Remove(fmt.Sprintf("%s%s", a.outputPath, file.Name()))
+
+			name := file.Name()
+			if strings.HasPrefix(name, "output") &&
+				(strings.HasSuffix(name, ".csv") ||
+					strings.HasSuffix(name, ".xml") ||
+					strings.HasSuffix(name, ".tmp")) {
+
+				// attempt to remove the file and log any errors
+				err := os.Remove(filepath.Join(a.outputPath, name))
 				if err != nil {
-					fmt.Printf("deleting file %s: %v\n", file.Name(), err)
+					fmt.Printf("deleting file %s: %v\n", name, err)
 				}
 			}
 		}
@@ -1077,14 +1098,17 @@ func normalizeNumbers(v any) any {
 // writeAtomic writes data to a temporary file and then atomically renames it
 func writeAtomic(path string, data []byte) {
 
+	// create a temporary file pathby appending ".tmp" to the target file name
 	tmp := path + ".tmp"
 
+	//	create temp file
 	file, err := os.Create(tmp)
 	if err != nil {
 		fmt.Println("#Error: creating temp file:", err)
 		return
 	}
 
+	// write data to temp file
 	_, err = file.Write(data)
 	if err != nil {
 		fmt.Println("#Error: writing temp file:", err)
@@ -1092,6 +1116,7 @@ func writeAtomic(path string, data []byte) {
 		return
 	}
 
+	// ensure data is flushed to disk before renaming
 	err = file.Sync()
 	if err != nil {
 		fmt.Println("#Error: syncing temp file:", err)
@@ -1099,15 +1124,25 @@ func writeAtomic(path string, data []byte) {
 		return
 	}
 
+	// close temp file before renaming
 	err = file.Close()
 	if err != nil {
 		fmt.Println("#Error: closing temp file:", err)
 		return
 	}
 
+	// rename temp file to final path
 	err = os.Rename(tmp, path)
 	if err != nil {
 		fmt.Println("#Error: renaming temp file:", err)
 		return
+	}
+
+	// fsync directory (crash-safe rename)
+	dir := filepath.Dir(path)
+	d, err := os.Open(dir)
+	if err == nil {
+		d.Sync()
+		d.Close()
 	}
 }
