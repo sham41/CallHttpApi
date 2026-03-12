@@ -544,12 +544,6 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 	// Create XML file
 	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
 
-	// []map[string]interface{} → []interface{}
-	//items := make([]interface{}, 0, len(response.Data))
-	//for _, row := range response.Data {
-	//	items = append(items, row)
-	//}
-
 	items := make([]interface{}, len(response.Data))
 	for i := range response.Data {
 		items[i] = response.Data[i]
