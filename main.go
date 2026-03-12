@@ -553,7 +553,7 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 	serviceName := extractServiceTag(a.apiURL)
 
 	// root tag
-	rootTag := safeName(strings.TrimPrefix(serviceName, "/"))
+	rootTag := safeName(serviceName)
 
 	// JSON-like data → XML tree
 	root := convertJSONtoXML(rootTag, items)
