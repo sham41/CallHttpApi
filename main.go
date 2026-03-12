@@ -67,7 +67,7 @@ type Api struct {
 func main() {
 
 	// program start
-	fmt.Println("...Starting Api Http Caller v1.2.1 (c)")
+	fmt.Println("...Starting Api Http Caller v1.2.2 (c)")
 	StartTime := time.Now()
 
 	// command line flags
@@ -211,21 +211,31 @@ func logTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05.000")
 }
 
-// safeName - makes a string safe for XML tag names
+// safeName - converts a string to a safe XML tag name by replacing invalid characters with underscores and ensuring it doesn't start with a digit
 func safeName(s string) string {
 
-	// replace spaces and dashes with underscores, trim leading/trailing whitespace
 	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, " ", "_")
-	s = strings.ReplaceAll(s, "-", "_")
 
-	if s == "" {
+	var result []rune
+
+	for _, r := range s {
+
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			result = append(result, r)
+		} else {
+			result = append(result, '_')
+		}
+	}
+
+	if len(result) == 0 {
 		return "Field"
 	}
-	if s[0] >= '0' && s[0] <= '9' {
-		s = "F_" + s
+
+	if unicode.IsDigit(result[0]) {
+		return "F_" + string(result)
 	}
-	return s
+
+	return string(result)
 }
 
 // toXML - converts a Node to an indented string
@@ -246,9 +256,12 @@ func NodetoXML(node Node, indent string) string {
 
 // Convert the array name to a singular number
 func singularName(name string) string {
+
+	// For words ending in "s" (but not "ss"), we remove the trailing "s" to get the singular form.
 	if strings.HasSuffix(name, "s") && len(name) > 1 {
 		return strings.TrimSuffix(name, "s")
 	}
+
 	return "item"
 }
 
@@ -396,8 +409,24 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	err = dec.Decode(&apiResponse)
+
+	// handle JSON parsing error
 	if err != nil {
-		fmt.Println("#Error: parsing JSON:", err)
+
+		fmt.Println("#Warn: response not matching ApiResponse structure")
+
+		// log the raw response and exit
+		a.saveRawResponse(body, output)
+		return
+	}
+
+	// if there is no "data" node or it's empty, save the raw response and exit
+	if len(apiResponse.Data) == 0 {
+
+		fmt.Println("#Warn: response without data node")
+
+		// log the raw response and exit
+		a.saveRawResponse(body, output)
 		return
 	}
 
@@ -422,7 +451,9 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	//fmt.Println("#apiResponse.Meta.Page:", apiResponse.Meta.Page)
 
 	// pagination: if there are more pages, recursively call for the next page
-	if apiResponse.Meta.Total > apiResponse.Meta.Page {
+	if apiResponse.Meta.Total > 0 &&
+		apiResponse.Meta.Page > 0 &&
+		apiResponse.Meta.Total > apiResponse.Meta.Page {
 
 		// calculate the next page number and log it
 		nextPage := apiResponse.Meta.Page + 1
@@ -451,6 +482,57 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	}
 }
 
+// saveRawResponse - saves the raw API response body to a file, attempting to convert JSON to XML if possible
+func (a *Api) saveRawResponse(body []byte, output string) {
+
+	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
+
+	// decode generic JSON
+	obj, err := DecodeJSON(body)
+	if err != nil {
+
+		// if it's not JSON, log a warning and save the raw response
+		fmt.Println("#Warn: response is not JSON, saving raw")
+
+		// if it's not JSON, just save the raw response
+		writeAtomic(fileName, body)
+		return
+	}
+
+	// root tag based on service
+	serviceName := extractServiceTag(a.apiURL)
+	rootTag := safeName(serviceName)
+
+	// JSON → XML
+	root := convertJSONtoXML(rootTag, obj)
+
+	// XML (UTF-8)
+	xmlBody, err := xml.MarshalIndent(root, "", "  ")
+	if err != nil {
+		fmt.Println("#Error: marshal xml:", err)
+		return
+	}
+
+	// XML header + body
+	xmlFull := append(
+		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
+		xmlBody...,
+	)
+
+	// UTF-8 → Windows-1251
+	encoder := charmap.Windows1251.NewEncoder()
+	cp1251Data, err := encoder.Bytes(xmlFull)
+	if err != nil {
+		fmt.Println("#Error: encoding windows-1251:", err)
+		return
+	}
+
+	// write to file
+	writeAtomic(fileName, cp1251Data)
+
+	fmt.Printf("raw JSON converted to XML: %s\n", fileName)
+}
+
 // saveResponseXml - saves the API response data as an XML file
 func (a *Api) saveResponseXml(response ApiResponse, output string) {
 
@@ -461,17 +543,16 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 
 	// Create XML file
 	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
-	file, err := os.Create(fileName)
-	if err != nil {
-		fmt.Println("#Error: creating file:", err)
-		return
-	}
-	defer file.Close()
 
 	// []map[string]interface{} → []interface{}
-	items := make([]interface{}, 0, len(response.Data))
-	for _, row := range response.Data {
-		items = append(items, row)
+	//items := make([]interface{}, 0, len(response.Data))
+	//for _, row := range response.Data {
+	//	items = append(items, row)
+	//}
+
+	items := make([]interface{}, len(response.Data))
+	for i := range response.Data {
+		items[i] = response.Data[i]
 	}
 
 	// extract service name from URL
@@ -505,13 +586,14 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 	}
 
 	// write to file
-	if _, err := file.Write(cp1251Data); err != nil {
-		fmt.Println("#Error: writing file:", err)
-		return
-	}
+	writeAtomic(fileName, cp1251Data)
 
 	// success message
-	fmt.Printf("received %d records (xml): %s\n", len(response.Data), output)
+	fmt.Printf(
+		"received %d records (xml) -> %s\n",
+		len(response.Data),
+		fileName,
+	)
 }
 
 // saveResponse - saves the API response data as a CSV file
@@ -523,20 +605,8 @@ func (a *Api) saveResponse(response ApiResponse, output string) {
 	//}
 
 	// Create CSV file
-	csvFile, err := os.Create(fmt.Sprintf("%s%s", a.outputPath, output))
-	if err != nil {
-		fmt.Println("#Error: creating file:", err)
-		return
-	}
-	defer func(csvFile *os.File) {
-		err = csvFile.Close()
-		if err != nil {
-			fmt.Println("#Error: closing file:", err)
-			return
-		}
-	}(csvFile)
-
-	writer := csv.NewWriter(csvFile)
+	var buf bytes.Buffer
+	writer := csv.NewWriter(&buf)
 
 	// Write header
 	if len(response.Data) == 0 {
@@ -549,7 +619,8 @@ func (a *Api) saveResponse(response ApiResponse, output string) {
 	for key := range response.Data[0] {
 		header = append(header, key)
 	}
-	err = writer.Write(header)
+
+	err := writer.Write(header)
 	if err != nil {
 		fmt.Println("#Error: writing header:", err)
 		return
@@ -569,7 +640,7 @@ func (a *Api) saveResponse(response ApiResponse, output string) {
 			}
 			record = append(record, encoded)
 		}
-		err = writer.Write(record)
+		err := writer.Write(record)
 		if err != nil {
 			fmt.Println("#Error: writing record:", err)
 			return
@@ -577,6 +648,23 @@ func (a *Api) saveResponse(response ApiResponse, output string) {
 	}
 
 	writer.Flush()
+
+	if err := writer.Error(); err != nil {
+		fmt.Println("#Error: flushing csv:", err)
+		return
+	}
+
+	// write to file
+	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
+
+	// write atomically to avoid partial file issues
+	writeAtomic(fileName, buf.Bytes())
+
+	// success message
+	if buf.Len() == 0 {
+		fmt.Println("#Warn: empty csv generated")
+	}
+
 	fmt.Printf("received %d records: %s\n", len(response.Data), output)
 }
 
@@ -802,10 +890,12 @@ func readFileContent(path, fileName string) ([]map[string]interface{}, error) {
 
 // getJsonBytes - converts a generic interface to JSON bytes
 func getJsonBytes(v any) ([]byte, error) {
+
 	jsonBytes, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("marshalling JSON: %w", err)
 	}
+
 	fmt.Println("Body ===================================== >>>")
 	fmt.Printf("%s\n", string(jsonBytes))
 	fmt.Println("Body ===================================== <<<")
@@ -814,6 +904,7 @@ func getJsonBytes(v any) ([]byte, error) {
 
 // ConvertToUTF8 - converts a Windows-1251 encoded string to UTF-8
 func ConvertToUTF8(win1251 string) (string, error) {
+
 	decoder := charmap.Windows1251.NewDecoder()
 	utf8Content, err := decoder.String(win1251)
 	if err != nil {
@@ -986,5 +1077,43 @@ func normalizeNumbers(v any) any {
 		return x.String()
 	default:
 		return v
+	}
+}
+
+// writeAtomic writes data to a temporary file and then atomically renames it
+func writeAtomic(path string, data []byte) {
+
+	tmp := path + ".tmp"
+
+	file, err := os.Create(tmp)
+	if err != nil {
+		fmt.Println("#Error: creating temp file:", err)
+		return
+	}
+
+	_, err = file.Write(data)
+	if err != nil {
+		fmt.Println("#Error: writing temp file:", err)
+		file.Close()
+		return
+	}
+
+	err = file.Sync()
+	if err != nil {
+		fmt.Println("#Error: syncing temp file:", err)
+		file.Close()
+		return
+	}
+
+	err = file.Close()
+	if err != nil {
+		fmt.Println("#Error: closing temp file:", err)
+		return
+	}
+
+	err = os.Rename(tmp, path)
+	if err != nil {
+		fmt.Println("#Error: renaming temp file:", err)
+		return
 	}
 }
