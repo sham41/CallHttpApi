@@ -63,6 +63,7 @@ type Api struct {
 	token      string
 	debug      bool
 	xml        bool
+	client     *http.Client
 }
 
 func main() {
@@ -109,6 +110,7 @@ func main() {
 		outputPath: conf.OutputPath,
 		token:      conf.BearerToken,
 		xml:        *apiXml,
+		client:     newHTTPClient(),
 	}
 
 	// override paths if provided via command line
@@ -202,8 +204,25 @@ func main() {
 	}
 
 	// make the HTTP call
-	api.doHttpMethod(method, jsonBytes, outputFileName)
+	api.doHttpMethod(method, api.url, jsonBytes, outputFileName)
 
+}
+
+// newHTTPClient - creates a new HTTP client with a timeout
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 60 * time.Second,
+	}
+}
+
+// HasNextPage - checks if there are more pages to fetch based on the current page and total pages
+func (p PageData) HasNextPage() bool {
+	return p.Page > 0 && p.Total > p.Page
+}
+
+// NextPage - calculates the next page number
+func (p PageData) NextPage() int {
+	return p.Page + 1
 }
 
 // logTime - formats time for logging
@@ -354,14 +373,15 @@ func convertJSONtoXML(name string, v interface{}) Node {
 	return node
 }
 
-// doHttpMethod - makes an HTTP request with the given method, body, and handles the response
-func (a *Api) doHttpMethod(method string, data []byte, output string) {
+// doHttpMethod - performs the HTTP request with the given method, URL, and body,
+// then processes the response and handles pagination if necessary
+func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output string) {
 
 	// log the request being made
-	fmt.Printf("%s: %s\n", method, a.url)
+	fmt.Printf("%s: %s\n", method, requestURL)
 
 	//	create HTTP request
-	req, err := http.NewRequest(method, a.url, bytes.NewBuffer(data))
+	req, err := http.NewRequest(method, requestURL, bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Println("#Error: creating request:", err)
 		return
@@ -374,8 +394,7 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	}
 
 	// make the HTTP request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		fmt.Println("#Error: making request:", err)
 		return
@@ -411,35 +430,44 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	dec.UseNumber()
 	err = dec.Decode(&apiResponse)
 
-	// handle JSON parsing error
+	// if there was an error parsing the response as JSON, we log a warning and attempt to save the raw response as XML
+	// if it's a GET request and XML mode is enabled, otherwise we just log the error and return
 	if err != nil {
 
-		fmt.Println("#Warn: response not matching ApiResponse structure")
+		// if the response cannot be parsed as JSON, we log a warning and attempt to save the raw response as XML if
+		// it's a GET request and XML mode is enabled, otherwise we just log the error and return
+		if strings.EqualFold(method, "GET") && a.xml {
 
-		// log the raw response and exit
-		a.saveRawResponse(body, output)
+			if a.debug {
+				fmt.Println("#Info: response not matching ApiResponse structure - save the raw response in xml if possible")
+			}
+			a.saveRawResponseXML(body, output)
+		}
 		return
 	}
 
-	// if there is no "data" node or it's empty, save the raw response and exit
+	// if the response does not contain a "data" field, we log a warning and attempt to save the raw response as XML
+	// if it's a GET request and XML mode is enabled, otherwise we just return
+	if apiResponse.Data == nil {
+
+		// if the response does not contain a "data" field, we save the raw response for GET requests
+		// to avoid losing potentially important information
+		if strings.EqualFold(method, "GET") && a.xml {
+
+			if a.debug {
+				fmt.Println("#Info: response not matching ApiResponse structure - save the raw response in xml if possible")
+			}
+			a.saveRawResponseXML(body, output)
+		}
+		return
+	}
+
 	if len(apiResponse.Data) == 0 {
-
-		fmt.Println("#Warn: response without data node")
-
-		// log the raw response and exit
-		a.saveRawResponse(body, output)
+		if a.debug {
+			fmt.Println("#Info: empty data array")
+		}
 		return
 	}
-
-	//if !apiResponse.Success {
-	//	if apiResponse.Message != "" {
-	//		fmt.Println("#Error: ", apiResponse.Message)
-	//	}
-	//if len(apiResponse.Errors) > 0 {
-	//	fmt.Println("#Error: ", apiResponse.Errors)
-	//}
-	//	return
-	//}
 
 	// save in CSV or XML
 	if a.xml {
@@ -451,16 +479,15 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 	//fmt.Println("#apiResponse.Meta.Total:", apiResponse.Meta.Total)
 	//fmt.Println("#apiResponse.Meta.Page:", apiResponse.Meta.Page)
 
-	// pagination: if there are more pages, recursively call for the next page
-	if apiResponse.Meta.Total > 0 &&
-		apiResponse.Meta.Page > 0 &&
-		apiResponse.Meta.Total > apiResponse.Meta.Page {
+	// if there are more pages to fetch, we calculate the next page URL and recursively call doHttpMethod for the next page
+	meta := apiResponse.Meta
+	if meta.HasNextPage() {
 
 		// calculate the next page number and log it
-		nextPage := apiResponse.Meta.Page + 1
-		fmt.Printf("fetching page %d of %d...\n", nextPage, apiResponse.Meta.Total)
+		nextPage := meta.NextPage()
+		fmt.Printf("fetching page %d of %d...\n", nextPage, meta.Total)
 
-		parsedParams, err := url.Parse(a.url)
+		parsedParams, err := url.Parse(requestURL)
 		if err != nil {
 			fmt.Println("#Error: parsing URL:", err)
 			return
@@ -471,33 +498,25 @@ func (a *Api) doHttpMethod(method string, data []byte, output string) {
 		params.Set("page", fmt.Sprintf("%d", nextPage))
 		parsedParams.RawQuery = params.Encode()
 
+		// get the next URL with the updated page parameter
+		nextURL := parsedParams.String()
+
 		// determine output file extension
 		extFileOutput := "csv"
 		if a.xml {
 			extFileOutput = "xml"
 		}
 
-		// get the next page URL and log it
-		nextURL := parsedParams.String()
+		// recursively call doHttpMethod for the next page
+		a.doHttpMethod("GET", nextURL, nil, fmt.Sprintf("output_%d.%s", nextPage, extFileOutput))
 
-		// temporarily use next page URL
-		oldURL := a.url
-
-		// update the API URL to the next page URL for the recursive call
-		a.url = nextURL
-
-		// recursively call the same method to fetch the next page, using a different output file name to avoid overwriting the previous page's results
-		a.doHttpMethod("GET", nil, fmt.Sprintf("output_%d.%s", nextPage, extFileOutput))
-
-		// restore original URL
-		a.url = oldURL
 	}
 }
 
 // saveRawResponse - saves the raw API response body to a file, attempting to convert JSON to XML if possible
-func (a *Api) saveRawResponse(body []byte, output string) {
+func (a *Api) saveRawResponseXML(body []byte, output string) {
 
-	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
+	fileName := filepath.Join(a.outputPath, output)
 
 	// decode generic JSON
 	obj, err := DecodeJSON(body)
@@ -511,36 +530,26 @@ func (a *Api) saveRawResponse(body []byte, output string) {
 		return
 	}
 
+	if obj == nil {
+		if a.debug {
+			fmt.Println("#Info: empty JSON response, skipping file")
+		}
+		return
+	}
+
+	if len(obj) == 0 {
+		if a.debug {
+			fmt.Println("#Info: empty JSON object, skipping file")
+		}
+		return
+	}
+
 	// root tag based on service
 	serviceName := extractServiceTag(a.apiURL)
 	rootTag := safeName(serviceName)
 
-	// JSON → XML
-	root := convertJSONtoXML(rootTag, obj)
-
-	// XML (UTF-8)
-	xmlBody, err := xml.MarshalIndent(root, "", "  ")
-	if err != nil {
-		fmt.Println("#Error: marshal xml:", err)
-		return
-	}
-
-	// XML header + body
-	xmlFull := append(
-		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
-		xmlBody...,
-	)
-
-	// UTF-8 → Windows-1251
-	encoder := charmap.Windows1251.NewEncoder()
-	cp1251Data, err := encoder.Bytes(xmlFull)
-	if err != nil {
-		fmt.Println("#Error: encoding windows-1251:", err)
-		return
-	}
-
-	// write to file
-	writeAtomic(fileName, cp1251Data)
+	// attempt to convert JSON to XML and save, if it fails we will have already saved the raw response above, so we can just log the error and return
+	a.writeXMLFile(rootTag, obj, output)
 
 	fmt.Printf("raw JSON converted to XML: %s\n", fileName)
 }
@@ -548,51 +557,23 @@ func (a *Api) saveRawResponse(body []byte, output string) {
 // saveResponseXml - saves the API response data as an XML file
 func (a *Api) saveResponseXml(response ApiResponse, output string) {
 
+	fileName := filepath.Join(a.outputPath, output)
+
 	if len(response.Data) == 0 {
 		fmt.Println("#Warn: no data to write")
 		return
 	}
-
-	// Create XML file
-	fileName := fmt.Sprintf("%s%s", a.outputPath, output)
 
 	items := make([]interface{}, len(response.Data))
 	for i := range response.Data {
 		items[i] = response.Data[i]
 	}
 
-	// extract service name from URL
 	serviceName := extractServiceTag(a.apiURL)
-
-	// root tag
 	rootTag := safeName(serviceName)
 
-	// JSON-like data → XML tree
-	root := convertJSONtoXML(rootTag, items)
-
-	// XML (UTF-8)
-	xmlBody, err := xml.MarshalIndent(root, "", "  ")
-	if err != nil {
-		fmt.Println("#Error: marshal xml:", err)
-		return
-	}
-
-	// XML header
-	xmlFull := append(
-		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
-		xmlBody...,
-	)
-
-	// UTF-8 → Windows-1251
-	encoder := charmap.Windows1251.NewEncoder()
-	cp1251Data, err := encoder.Bytes(xmlFull)
-	if err != nil {
-		fmt.Println("#Error: encoding to windows-1251:", err)
-		return
-	}
-
-	// write to file
-	writeAtomic(fileName, cp1251Data)
+	// attempt to convert JSON to XML and save, if it fails we will have already saved the raw response above, so we can just log the error and return
+	a.writeXMLFile(rootTag, items, output)
 
 	// success message
 	fmt.Printf(
@@ -600,6 +581,33 @@ func (a *Api) saveResponseXml(response ApiResponse, output string) {
 		len(response.Data),
 		fileName,
 	)
+}
+
+func (a *Api) writeXMLFile(rootName string, data interface{}, output string) {
+
+	fileName := filepath.Join(a.outputPath, output)
+
+	root := convertJSONtoXML(rootName, data)
+
+	xmlBody, err := xml.MarshalIndent(root, "", "  ")
+	if err != nil {
+		fmt.Println("#Error: marshal xml:", err)
+		return
+	}
+
+	xmlFull := append(
+		[]byte(`<?xml version="1.0" encoding="windows-1251"?>`+"\n"),
+		xmlBody...,
+	)
+
+	encoder := charmap.Windows1251.NewEncoder()
+	cp1251Data, err := encoder.Bytes(xmlFull)
+	if err != nil {
+		fmt.Println("#Error: encoding windows-1251:", err)
+		return
+	}
+
+	writeAtomic(fileName, cp1251Data)
 }
 
 // saveResponse - saves the API response data as a CSV file
@@ -830,7 +838,7 @@ func prepareBody(path string) ([]byte, error) {
 // readFileContentXML - reads XML file and parses it into RequestXML struct
 func readFileContentXML(path, fileName string) (*RequestXML, error) {
 
-	filePath := fmt.Sprintf("%s%s", path, fileName)
+	filePath := filepath.Join(path, fileName)
 
 	dataBytes, err := os.ReadFile(filePath)
 	if err != nil {
@@ -857,10 +865,14 @@ func readFileContentXML(path, fileName string) (*RequestXML, error) {
 
 // readFileContent - reads CSV file and converts it to a slice of maps
 func readFileContent(path, fileName string) ([]map[string]interface{}, error) {
-	file, err := os.Open(fmt.Sprintf("%s%s", path, fileName))
+
+	filePath := filepath.Join(path, fileName)
+
+	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening file: %s: %s", fileName, err)
 	}
+
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
@@ -938,28 +950,22 @@ func ConvertToWindows1251(utf8Str string) (string, error) {
 
 // removeFiles - removes previously generated output files to avoid confusion with new results
 func (a *Api) removeFiles() {
-	files, err := os.ReadDir(a.outputPath)
+
+	files, err := filepath.Glob(filepath.Join(a.outputPath, "output*"))
 	if err != nil {
 		fmt.Println("reading directory:", err)
 		return
 	}
 
-	// we look for files that start with "output" and end with ".csv", ".xml", or ".tmp" and attempt to remove them
 	for _, file := range files {
 
-		if !file.IsDir() {
+		if strings.HasSuffix(file, ".csv") ||
+			strings.HasSuffix(file, ".xml") ||
+			strings.HasSuffix(file, ".tmp") {
 
-			name := file.Name()
-			if strings.HasPrefix(name, "output") &&
-				(strings.HasSuffix(name, ".csv") ||
-					strings.HasSuffix(name, ".xml") ||
-					strings.HasSuffix(name, ".tmp")) {
-
-				// attempt to remove the file and log any errors
-				err := os.Remove(filepath.Join(a.outputPath, name))
-				if err != nil {
-					fmt.Printf("deleting file %s: %v\n", name, err)
-				}
+			err := os.Remove(file)
+			if err != nil {
+				fmt.Printf("deleting file %s: %v\n", file, err)
 			}
 		}
 	}
@@ -1011,12 +1017,14 @@ func (a *Api) doMultipartPost(boundary string) {
 		fmt.Println("#Error: creating request:", err)
 		return
 	}
+
+	// set headers
 	content := writer.FormDataContentType()
 	fmt.Println("Content-Type:", content)
 	req.Header.Set("Content-Type", content)
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// make the HTTP request
+	resp, err := a.client.Do(req)
 	if err != nil {
 		fmt.Println("#Error: making request:", err)
 		return
