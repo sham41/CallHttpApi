@@ -56,20 +56,40 @@ type RequestXML struct {
 	Data    Node     `xml:"data"`
 }
 type Api struct {
-	url        string
-	apiURL     string
-	inputPath  string
-	outputPath string
-	token      string
-	debug      bool
-	xml        bool
-	client     *http.Client
+	url         string
+	apiURL      string
+	inputPath   string
+	outputPath  string
+	token       string
+	debug       bool
+	xml         bool
+	client      *http.Client
+	responseLog *os.File
+}
+
+func NewApi(baseURL, apiURL string, conf Config, xml bool) *Api {
+
+	api := &Api{
+		url:        buildURL(baseURL, apiURL),
+		apiURL:     apiURL,
+		inputPath:  conf.InputPath,
+		outputPath: conf.OutputPath,
+		token:      conf.BearerToken,
+		xml:        xml,
+		client:     newHTTPClient(),
+	}
+
+	if api.token == "" {
+		fmt.Println("#Warn: no token provided")
+	}
+
+	return api
 }
 
 func main() {
 
 	// program start
-	fmt.Println("...Starting Api Http Caller v1.2.2 (c)")
+	fmt.Println("...Starting Api Http Caller v1.2.5 (c)")
 	StartTime := time.Now()
 
 	// command line flags
@@ -103,15 +123,7 @@ func main() {
 	}
 
 	// initialize Api struct with configuration and command line parameters
-	api := Api{
-		url:        fmt.Sprintf("%s%s", baseUrl, *apiURL),
-		apiURL:     *apiURL,
-		inputPath:  conf.InputPath,
-		outputPath: conf.OutputPath,
-		token:      conf.BearerToken,
-		xml:        *apiXml,
-		client:     newHTTPClient(),
-	}
+	api := NewApi(baseUrl, *apiURL, *conf, *apiXml)
 
 	// override paths if provided via command line
 	if workPath != nil && *workPath != "" {
@@ -121,6 +133,7 @@ func main() {
 
 	// debug output
 	if *debug {
+
 		fmt.Println("Debug mode is ON")
 		fmt.Println("Config file:", *configPath)
 		fmt.Println("API URL:", *apiURL)
@@ -137,6 +150,9 @@ func main() {
 	// remove previous log file if exists (optional, can be commented out if you want to keep logs from previous runs)
 	//_ = os.Remove(logFile)
 
+	// check log file size and rotate if it exceeds the specified maximum size
+	rotateLogIfNeeded(logFile, 50*1024*1024) // 50MB
+
 	// open log file for appending, create if not exists
 	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -145,19 +161,48 @@ func main() {
 	}
 
 	// ensure log file is closed at the end
-	defer func(file *os.File) {
+	defer func(f *os.File) {
 
 		// log finish time
 		fmt.Printf("Finished in %s\n", time.Since(StartTime))
 		fmt.Printf("Finished ===================================== <<< %s\n\n", logTime(time.Now()))
 
 		// close log file
-		err = file.Close()
+		err = f.Close()
 		if err != nil {
 			fmt.Println("closing log file:", err)
 			return
 		}
 	}(file)
+
+	// redirect standard error to the log file
+	responseLogPath := fmt.Sprintf("%sresponse.log", api.outputPath)
+
+	// remove previous log file if exists (optional, can be commented out if you want to keep logs from previous runs)
+	//_ = os.Remove(responseLogPath)
+
+	// check log file size and rotate if it exceeds the specified maximum size
+	rotateLogIfNeeded(responseLogPath, 25*1024*1024) // 25MB
+
+	// open response log file for appending, create if not exists
+	respFile, err := os.OpenFile(responseLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("opening response log:", err)
+		return
+	}
+
+	// ensure response log file is closed at the end
+	api.responseLog = respFile
+
+	//
+	defer func(f *os.File) {
+		// close log file
+		err = f.Close()
+		if err != nil {
+			fmt.Println("closing response log file:", err)
+			return
+		}
+	}(respFile)
 
 	// redirect standard output to the log file
 	os.Stdout = file
@@ -211,7 +256,7 @@ func main() {
 // newHTTPClient - creates a new HTTP client with a timeout
 func newHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: 90 * time.Second,
 	}
 }
 
@@ -225,10 +270,78 @@ func (p PageData) NextPage() int {
 	return p.Page + 1
 }
 
+func buildURL(baseURL, apiURL string) string {
+	return strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(apiURL, "/")
+}
+
 // logTime - formats time for logging
 func logTime(t time.Time) string {
 
 	return t.Format("2006-01-02 15:04:05.000")
+}
+
+// rotateLogIfNeeded - checks the size of the log file and rotates it if it exceeds the specified maximum size
+func rotateLogIfNeeded(path string, maxSize int64) {
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return // if the file does not exist
+	}
+
+	if info.Size() < maxSize {
+		return
+	}
+
+	// имя архива
+	timestamp := time.Now().Format("20060102_150405")
+	newName := fmt.Sprintf("%s.%s", path, timestamp)
+
+	err = os.Rename(path, newName)
+	if err != nil {
+		fmt.Println("#Error: rotate log:", err)
+		return
+	}
+}
+
+// writeResponseLog - writes the request and response details to the response log file for debugging purposes
+func (a *Api) writeResponseLog(method, url string, requestBody, responseBody []byte) {
+
+	if a.responseLog == nil {
+		return
+	}
+
+	StartTime := time.Now()
+
+	a.responseLog.WriteString("=====================================================\n")
+	a.responseLog.WriteString(fmt.Sprintf("Start: %s\n\n", logTime(StartTime)))
+
+	// Request
+	a.responseLog.WriteString("Request ===================================== >>>\n")
+	a.responseLog.WriteString(fmt.Sprintf("%s %s\n", method, url))
+
+	if len(requestBody) > 0 {
+		a.responseLog.Write(requestBody)
+		a.responseLog.WriteString("\n")
+	}
+
+	a.responseLog.WriteString("Request ===================================== <<<\n\n")
+
+	// Response
+	a.responseLog.WriteString("Response ===================================== >>>\n")
+
+	_, err := a.responseLog.Write(responseBody)
+	if err != nil {
+		fmt.Println("#Error: writing response log:", err)
+	}
+
+	a.responseLog.WriteString("\nResponse ===================================== <<<\n\n")
+
+	a.responseLog.WriteString(fmt.Sprintf("Finished in %s\n", time.Since(StartTime)))
+	a.responseLog.WriteString(fmt.Sprintf("Finished: %s\n", logTime(time.Now())))
+	a.responseLog.WriteString("=====================================================\n")
+
+	// flush the log to ensure it's written to disk
+	a.responseLog.Sync()
 }
 
 // safeName - converts a string to a safe XML tag name by replacing invalid characters with underscores and ensuring it doesn't start with a digit
@@ -416,13 +529,13 @@ func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output
 		return
 	}
 
-	// log the response body if debug mode is enabled
-	if a.debug {
-		fmt.Println("Response ===================================== >>>")
-		fmt.Printf("%s\n", string(body))
-		fmt.Println("Response ===================================== <<<")
-	}
+	// log the request and response details to the response log file for debugging purposes
+	a.writeResponseLog(method, requestURL, data, body)
 
+	// log the request and response details to the response log file for debugging purposes
+	if a.debug {
+		fmt.Printf("[DEBUG] response size: %d bytes\n", len(body))
+	}
 	//
 	var apiResponse ApiResponse
 	//err = json.Unmarshal(body, &apiResponse)
@@ -509,7 +622,6 @@ func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output
 
 		// recursively call doHttpMethod for the next page
 		a.doHttpMethod("GET", nextURL, nil, fmt.Sprintf("output_%d.%s", nextPage, extFileOutput))
-
 	}
 }
 
@@ -753,9 +865,7 @@ func getJsonBytesFromXMLData(dataNode Node) ([]byte, error) {
 		return nil, fmt.Errorf("marshalling JSON from XML: %w", err)
 	}
 
-	fmt.Println("Body ===================================== >>>")
-	fmt.Printf("%s\n", string(jsonBytes))
-	fmt.Println("Body ===================================== <<<")
+	fmt.Printf("[DEBUG] request body size: %d bytes\n", len(jsonBytes))
 
 	return jsonBytes, nil
 }
@@ -914,9 +1024,8 @@ func getJsonBytes(v any) ([]byte, error) {
 		return nil, fmt.Errorf("marshalling JSON: %w", err)
 	}
 
-	fmt.Println("Body ===================================== >>>")
-	fmt.Printf("%s\n", string(jsonBytes))
-	fmt.Println("Body ===================================== <<<")
+	fmt.Printf("[DEBUG] request body size: %d bytes\n", len(jsonBytes))
+
 	return jsonBytes, nil
 }
 
@@ -1008,9 +1117,13 @@ func (a *Api) doMultipartPost(boundary string) {
 		return
 	}
 
-	fmt.Println("Body ===================================== >>>")
-	fmt.Printf("%s\n", body)
-	fmt.Println("Body ===================================== <<<")
+	//fmt.Println("Body ===================================== >>>")
+	//fmt.Printf("%s\n", body)
+	//fmt.Println("Body ===================================== <<<")
+
+	if a.debug {
+		fmt.Printf("[DEBUG] request body size: %d bytes\n", len(body.Bytes()))
+	}
 
 	req, err := http.NewRequest("POST", a.url, body)
 	if err != nil {
