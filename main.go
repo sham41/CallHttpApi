@@ -153,6 +153,9 @@ func main() {
 	// check log file size and rotate if it exceeds the specified maximum size
 	rotateLogIfNeeded(logFile, 50*1024*1024) // 50MB
 
+	// cleanup old log files, keeping only the 5 most recent ones based on modification time
+	cleanupOldLogs(api.outputPath, "errors.log", 5) // keep only 5 logs
+
 	// open log file for appending, create if not exists
 	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -182,7 +185,10 @@ func main() {
 	//_ = os.Remove(responseLogPath)
 
 	// check log file size and rotate if it exceeds the specified maximum size
-	rotateLogIfNeeded(responseLogPath, 25*1024*1024) // 25MB
+	rotateLogIfNeeded(responseLogPath, 50*1024*1024) // 50MB
+
+	// cleanup old log files, keeping only the 5 most recent ones based on modification time
+	cleanupOldLogs(api.outputPath, "response.log", 5) // keep only 5 logs
 
 	// open response log file for appending, create if not exists
 	respFile, err := os.OpenFile(responseLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -276,8 +282,80 @@ func buildURL(baseURL, apiURL string) string {
 
 // logTime - formats time for logging
 func logTime(t time.Time) string {
-
 	return t.Format("2006-01-02 15:04:05.000")
+}
+
+// cleanupOldLogs - removes old log files, keeping only the specified maximum number of recent log files based on modification time
+func cleanupOldLogs(dir, baseName string, maxFiles int) {
+
+	// read all files in the log directory
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		fmt.Println("#Error: reading log dir:", err)
+		return
+	}
+
+	// struct to hold log file information
+	type fileInfo struct {
+		name string
+		time time.Time
+	}
+
+	var logs []fileInfo
+
+	// collect log files with their modification times,
+	// skipping the current log file and directories
+	for _, f := range files {
+
+		if f.IsDir() {
+			continue
+		}
+
+		// we look for files that start with the base name (e.g., "errors.log")
+		// to identify rotated log files like "errors.log.20230601_120000"
+		name := f.Name()
+
+		if name == baseName {
+			continue // skip current log file
+		}
+
+		if strings.HasPrefix(name, baseName) {
+
+			info, err := f.Info()
+			if err != nil {
+				continue
+			}
+
+			logs = append(logs, fileInfo{
+				name: name,
+				time: info.ModTime(),
+			})
+		}
+	}
+
+	// sort log files by modification time in descending order (newest first)
+	sort.Slice(logs, func(i, j int) bool {
+		return logs[i].time.After(logs[j].time)
+	})
+
+	// if the number of log files is within the limit,
+	//  we can return without deleting anything
+	if len(logs) <= maxFiles {
+		return
+	}
+
+	// 	delete old log files, keeping only the most recent ones based on modification time
+	for i := maxFiles; i < len(logs); i++ {
+
+		path := filepath.Join(dir, logs[i].name)
+
+		err := os.Remove(path)
+		if err != nil {
+			fmt.Println("#Error: removing old log:", err)
+		} else {
+			fmt.Println("[INFO] removed old log:", logs[i].name)
+		}
+	}
 }
 
 // rotateLogIfNeeded - checks the size of the log file and rotates it if it exceeds the specified maximum size
