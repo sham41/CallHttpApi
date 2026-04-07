@@ -65,10 +65,17 @@ type Api struct {
 	xml         bool
 	client      *http.Client
 	responseLog *os.File
+
+	// batch processing configuration
+	batchEnabled bool
+	batchSize    int
+	batchWorkers int
+	itemsKey     string
 }
 
-func NewApi(baseURL, apiURL string, conf Config, xml bool) *Api {
+func NewApi(baseURL, apiURL string, conf Config, xml bool, batchEnabled bool) *Api {
 
+	// initialize Api struct with configuration and command line parameters
 	api := &Api{
 		url:        buildURL(baseURL, apiURL),
 		apiURL:     apiURL,
@@ -77,6 +84,16 @@ func NewApi(baseURL, apiURL string, conf Config, xml bool) *Api {
 		token:      conf.BearerToken,
 		xml:        xml,
 		client:     newHTTPClient(),
+	}
+
+	// batch processing configuration
+	api.batchEnabled = batchEnabled
+	api.batchSize = conf.BatchSize
+	api.batchWorkers = conf.BatchWorkers
+	api.itemsKey = conf.ItemsKey
+
+	if api.batchWorkers <= 0 {
+		api.batchWorkers = 1
 	}
 
 	if api.token == "" {
@@ -89,7 +106,7 @@ func NewApi(baseURL, apiURL string, conf Config, xml bool) *Api {
 func main() {
 
 	// program start
-	fmt.Println("...Starting Api Http Caller v1.2.5 (c)")
+	fmt.Println("...Starting Api Http Caller v1.3.0 (c)")
 	StartTime := time.Now()
 
 	// command line flags
@@ -100,6 +117,12 @@ func main() {
 	boundary := flag.String("boundary", "", "File name to be send using boundary")
 	debug := flag.Bool("debug", false, "enable debug mode")
 	apiXml := flag.Bool("xml", false, "enable xml mode")
+
+	// batch processing flags
+	batchEnabled := flag.Bool("batch", false, "enable batch processing")
+	itemsKey := flag.String("items-key", "items", "json array key")
+
+	// parse command line flags
 	flag.Parse()
 
 	// validate required parameters
@@ -123,12 +146,17 @@ func main() {
 	}
 
 	// initialize Api struct with configuration and command line parameters
-	api := NewApi(baseUrl, *apiURL, *conf, *apiXml)
+	api := NewApi(baseUrl, *apiURL, *conf, *apiXml, *batchEnabled)
 
 	// override paths if provided via command line
 	if workPath != nil && *workPath != "" {
 		api.inputPath = *workPath
 		api.outputPath = *workPath
+	}
+
+	// override batch processing settings if provided via command line
+	if itemsKey != nil && *itemsKey != "" {
+		api.itemsKey = *itemsKey
 	}
 
 	// debug output
@@ -141,6 +169,7 @@ func main() {
 		fmt.Println("Working directory:", *workPath)
 		fmt.Println("Boundary:", *boundary)
 		fmt.Println("XML mode:", *apiXml)
+		fmt.Println("Batch mode:", *batchEnabled)
 		api.debug = true
 	}
 
@@ -215,6 +244,14 @@ func main() {
 
 	// log start time
 	fmt.Println("Start ===================================== >>>", logTime(StartTime))
+
+	// if the batch enabled flag is set
+	if api.batchEnabled {
+		fmt.Println("Batch Enabled:", api.batchEnabled)
+		fmt.Println("Batch Items Key:", api.itemsKey)
+		fmt.Println("Batch Size:", api.batchSize)
+		fmt.Println("Batch Workers:", api.batchWorkers)
+	}
 
 	// remove previous output files
 	api.removeFiles()
@@ -370,7 +407,7 @@ func rotateLogIfNeeded(path string, maxSize int64) {
 		return
 	}
 
-	// имя архива
+	// if the file exceeds the maximum size, we rename it with a timestamp to archive it and start a new log file
 	timestamp := time.Now().Format("20060102_150405")
 	newName := fmt.Sprintf("%s.%s", path, timestamp)
 
@@ -381,11 +418,53 @@ func rotateLogIfNeeded(path string, maxSize int64) {
 	}
 }
 
+// writeOperationStart - logs the start time of the operation to the response log file
+func (a *Api) writeOperationStart(method, url string, totalBatches int) {
+
+	a.responseLog.WriteString("=====================================================\n")
+	a.responseLog.WriteString(fmt.Sprintf("Start: %s\n\n", logTime(time.Now())))
+	a.responseLog.WriteString(fmt.Sprintf("Operation: %s %s\n", method, url))
+
+	if totalBatches > 0 {
+		a.responseLog.WriteString(fmt.Sprintf("Batches: %d\n\n", totalBatches))
+	}
+}
+
+// writeOperationFinish - logs the finish time and duration of the operation to the response log file
+func (a *Api) writeOperationFinish(start time.Time) {
+
+	a.responseLog.WriteString(fmt.Sprintf("Finished in %s\n", time.Since(start)))
+	a.responseLog.WriteString(fmt.Sprintf("Finished: %s\n", logTime(time.Now())))
+	a.responseLog.WriteString("=====================================================\n")
+}
+
+// writeBatchLog - logs the details of a batch operation to the response log file, including the request and response data, and batch information
+func (a *Api) writeBatchLog(method, url string, requestBody, responseBody []byte, batch BatchInfo, status string) {
+
+	// log batch information
+	a.responseLog.WriteString(fmt.Sprintf(
+		"[Batch %d/%d] items: %d status: %s\n\n",
+		batch.Index,
+		batch.Total,
+		batch.Size,
+		status,
+	))
+
+	a.responseLog.WriteString("Request ===================================== >>>\n")
+	a.responseLog.WriteString(fmt.Sprintf("%s %s\n", method, url))
+	a.responseLog.Write(requestBody)
+	a.responseLog.WriteString("\nRequest ===================================== <<<\n\n")
+
+	a.responseLog.WriteString("Response ===================================== >>>\n")
+	a.responseLog.Write(responseBody)
+	a.responseLog.WriteString("\nResponse ===================================== <<<\n\n")
+}
+
 // writeResponseLog - writes the request and response details to the response log file for debugging purposes
-func (a *Api) writeResponseLog(method, url string, requestBody, responseBody []byte) {
+func (a *Api) writeResponseLog(method, url string, requestBody, responseBody []byte) error {
 
 	if a.responseLog == nil {
-		return
+		return fmt.Errorf("response log file is not initialized")
 	}
 
 	StartTime := time.Now()
@@ -420,6 +499,7 @@ func (a *Api) writeResponseLog(method, url string, requestBody, responseBody []b
 
 	// flush the log to ensure it's written to disk
 	a.responseLog.Sync()
+	return nil
 }
 
 // safeName - converts a string to a safe XML tag name by replacing invalid characters with underscores and ensuring it doesn't start with a digit
@@ -564,18 +644,14 @@ func convertJSONtoXML(name string, v interface{}) Node {
 	return node
 }
 
-// doHttpMethod - performs the HTTP request with the given method, URL, and body,
-// then processes the response and handles pagination if necessary
-func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output string) {
+// doRequest - performs the HTTP request with the given method, URL, and body, and returns the response body or an error
+func (a *Api) doRequest(method, url string, data []byte) ([]byte, error) {
 
 	// log the request being made
-	fmt.Printf("%s: %s\n", method, requestURL)
-
-	//	create HTTP request
-	req, err := http.NewRequest(method, requestURL, bytes.NewBuffer(data))
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Println("#Error: creating request:", err)
-		return
+		return nil, err
 	}
 
 	// set headers
@@ -588,7 +664,7 @@ func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output
 	resp, err := a.client.Do(req)
 	if err != nil {
 		fmt.Println("#Error: making request:", err)
-		return
+		return nil, err
 	}
 
 	// ensure response body is closed at the end
@@ -600,10 +676,46 @@ func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output
 		}
 	}(resp.Body)
 
-	// check for non-successful status codes
+	// read the response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		fmt.Println("#Error: reading response body:", err)
+		return nil, err
+	}
+
+	// if the response status code indicates an error, we return an error with the status and the response body for debugging purposes
+	if resp.StatusCode >= 300 {
+		return body, fmt.Errorf("#Error: bad status: %s", resp.Status)
+	}
+
+	return body, nil
+}
+
+// doHttpMethod - performs the HTTP request with the given method, URL, and body,
+// then processes the response and handles pagination if necessary
+func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output string) {
+
+	// log the request being made
+	fmt.Printf("%s: %s\n", method, requestURL)
+
+	// if it's a POST request and batch processing is enabled, we handle it with the batch processing function
+	if method == "POST" && a.batchEnabled && a.xml {
+
+		// we process the batch
+		err := a.processBatch(data, requestURL)
+		if err != nil {
+			fmt.Println("#Error Batch process:", err)
+			return
+		}
+
+		// after processing the batch, we return without making a single POST request
+		return
+	}
+
+	// make the HTTP request
+	body, err := a.doRequest(method, requestURL, data)
+	if err != nil {
+		fmt.Println("#Error: doing request:", err)
 		return
 	}
 
@@ -653,6 +765,7 @@ func (a *Api) doHttpMethod(method string, requestURL string, data []byte, output
 		return
 	}
 
+	// if the "data" field is empty, we log a warning and skip saving the file to avoid creating empty files
 	if len(apiResponse.Data) == 0 {
 		if a.debug {
 			fmt.Println("#Info: empty data array")
