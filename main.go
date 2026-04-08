@@ -106,7 +106,7 @@ func NewApi(baseURL, apiURL string, conf Config, xml bool, batchEnabled bool) *A
 func main() {
 
 	// program start
-	fmt.Println("...Starting Api Http Caller v1.3.0 (c)")
+	fmt.Println("...Starting Api Http Caller v1.3.1 (c)")
 	StartTime := time.Now()
 
 	// command line flags

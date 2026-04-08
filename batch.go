@@ -200,7 +200,7 @@ func processOneBatch(
 
 		fmt.Println("#Error: request:", err)
 
-		// log the error for the batch
+		// log the error for the batch ( with mutex )
 		mu.Lock()
 		a.writeBatchLog("POST", url, jsonData, []byte(err.Error()), job.Info, "ERROR")
 		mu.Unlock()
@@ -209,8 +209,7 @@ func processOneBatch(
 	}
 
 	// ----
-	// log the response for the batch
-	// logging ( with mutex )
+	// log the response for the batch ( with mutex )
 	mu.Lock()
 	a.writeBatchLog("POST", url, jsonData, resp, job.Info, "OK")
 	mu.Unlock()
