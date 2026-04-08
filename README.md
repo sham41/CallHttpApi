@@ -211,6 +211,20 @@ Generated JSON Body
 call.exe -url=/resource -method=POST -xml 
 ```
 
+### Batch Processing Implementation:
+
+Introduced batch processing functionality for POST requests, allowing large datasets to be split into smaller batches and processed concurrently using worker goroutines.
+Added new command-line flags: -batch to enable batch mode, -items-key to specify the JSON array key (default: "items").
+Updated Api struct with batch-related fields (batchEnabled, batchSize, batchWorkers, itemsKey) and modified NewApi constructor to initialize them from config.
+Configuration Updates:
+
+Extended Config struct in config.go with new YAML fields: batch_size (default: 1000), batch_workers (default: 1), and items_key (default: "items") for batch processing settings.
+Enhanced config loading with better organization and comments for API and batch configurations.
+
+```bash
+call.exe -url=/resource -method=POST -xml -batch
+```
+
 ### Help
 To display the help message, run the application with the following command:
 ```bash
