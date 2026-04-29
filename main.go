@@ -70,6 +70,7 @@ type Api struct {
 	batchEnabled bool
 	batchSize    int
 	batchWorkers int
+	batchdelay   int
 	itemsKey     string
 }
 
@@ -90,11 +91,16 @@ func NewApi(baseURL, apiURL string, conf Config, xml bool, batchEnabled bool) *A
 	api.batchEnabled = batchEnabled
 	api.batchSize = conf.BatchSize
 	api.batchWorkers = conf.BatchWorkers
+	api.batchdelay = conf.BatchDelay
 	api.itemsKey = conf.ItemsKey
 
 	if api.batchWorkers <= 0 {
 		api.batchWorkers = 1
 	}
+
+	//if api.batchWorkers <= 0 {
+	//	api.batchWorkers = 200
+	//}
 
 	if api.token == "" {
 		fmt.Println("#Warn: no token provided")
@@ -251,6 +257,7 @@ func main() {
 		fmt.Println("Batch Items Key:", api.itemsKey)
 		fmt.Println("Batch Size:", api.batchSize)
 		fmt.Println("Batch Workers:", api.batchWorkers)
+		fmt.Println("Batch Delay:", api.batchdelay)
 	}
 
 	// remove previous output files

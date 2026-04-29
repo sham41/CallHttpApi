@@ -18,6 +18,7 @@ type Config struct {
 	// batch processing configuration
 	BatchSize    int    `yaml:"batch_size" env-default:"1000"`
 	BatchWorkers int    `yaml:"batch_workers" env-default:"1"`
+	BatchDelay   int    `yaml:"batch_delay" env-default:"0"`
 	ItemsKey     string `yaml:"items_key" env-default:"items"`
 }
 

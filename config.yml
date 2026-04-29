@@ -4,3 +4,7 @@ base_url: https://test.site/
 input_path: input
 output_path: output
 bearer_token: abc
+batch_size: 1000
+batch_workers: 1
+batch_delay: 200
+items_key: items

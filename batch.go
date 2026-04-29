@@ -102,6 +102,11 @@ func (a *Api) processBatch(data []byte, url string) error {
 					errChan <- err
 				}
 
+				// add delay between batch requests if configured and if there are multiple workers
+				if a.batchWorkers > 1 && a.batchdelay > 0 {
+					time.Sleep(time.Duration(a.batchdelay) * time.Millisecond)
+				}
+
 				// mark the batch job as done
 				wg.Done()
 			}
